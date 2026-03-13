@@ -1,18 +1,14 @@
-# Recession Google Trends & Gold Price Analysis
+# Recession & Inflation Google Trends vs. Gold Price Analysis
 
 ## Overview
 
-This project investigates whether rising global online concern about potential
-stock market crashes — captured through Google Trends search intensity for the
-term **"Recession"** — is associated with subsequent increases in gold prices,
-and whether this signal can predict the direction of gold price movements in the
-following month.
+This project investigates whether rising global online concern about economic
+distress — captured through Google Trends search intensity for **"Recession"**
+and **"Inflation"** — is associated with subsequent increases in gold prices.
 
-Gold has historically been regarded as a safe-haven asset that attracts
-investors during periods of financial uncertainty. If heightened public anxiety
-about market crashes (as expressed through search behaviour) reliably *precedes*
-upward movements in gold prices, this offers investors a simple, freely
-available leading indicator.
+Gold is a classic safe-haven and inflation-hedge asset. If heightened public
+anxiety about economic instability reliably *precedes* upward movements in gold
+prices, this offers investors a simple, freely available leading indicator.
 
 ---
 
@@ -21,34 +17,30 @@ available leading indicator.
 | File | Description |
 |------|-------------|
 | `gold-300.xls` | Monthly average gold prices (USD/troy oz) from the **Bank of England** database (Feb 2001 – Jun 2025). HTML table format. |
-| `multiTimeline (3).csv` | Global monthly Google Trends index (0–100) for the search term **"Recession"** exported from [trends.google.com](https://trends.google.com) (Jan 2004 – Mar 2026). |
+| `multiTimeline (3).csv` | Global monthly Google Trends index (0–100) for **"Recession"** (Jan 2004 – Mar 2026). |
+| `multiTimeline (4).csv` | Global monthly Google Trends index (0–100) for **"Inflation"** (Jan 2004 – Mar 2026). |
 
-The two datasets are merged on the overlapping period **Jan 2004 – Jun 2025**, giving **258 monthly observations**.
+Both Trends datasets begin in Jan 2004 (the earliest month Google Trends provides for these terms), which sets the start of the analysis window. The gold price data also ends in Jun 2025, so both Trends datasets are trimmed to match. This gives **258 monthly observations** (Jan 2004 – Jun 2025) for each analysis. The gold data prior to Jan 2004 and the Trends data after Jun 2025 fall outside the overlapping window and are not used.
 
 ---
 
-## Analysis (`analysis.R`)
+## Analysis Scripts
 
-The script performs the following steps using **base R only** (no external
-packages required):
+### `analysis.R` — Recession Trends vs. Gold
+
+### `analysis_inflation.R` — Inflation Trends vs. Gold
+
+Both scripts use **base R only** (no external packages) and perform:
 
 | Step | Method |
 |------|--------|
-| 1 | Parse `gold-300.xls` (HTML table) and `multiTimeline (3).csv` |
+| 1 | Parse `gold-300.xls` (HTML table) and the relevant Trends CSV |
 | 2 | Compute monthly gold **percentage returns**: `(P_t / P_{t-1} − 1) × 100` |
 | 3 | Plot both time series and monthly returns |
-| 4 | **Hypothesis Test 1** – Pearson correlation between contemporaneous Trends and gold return |
-| 5 | **Lagged Cross-Correlation (CCF)** – identify whether Trends leads or lags gold returns up to ±12 months |
-| 6 | **Hypothesis Test 2** – OLS regression: `Gold_Return[t] ~ Recession_Trend[t−1]` with one-sided test |
-| 7 | **Granger Causality** – F-test for whether past Trends values improve prediction of gold returns (lags 1–3) |
-
-### Hypotheses
-
-**H₀ (contemporaneous):** `cor(Recession_Trend[t], Gold_Return[t]) = 0`  
-**H₁:** The correlation is non-zero (two-sided)
-
-**H₀ (predictive):** `β₁ = 0` — Trends at `t−1` has no effect on Gold Return at `t`  
-**H₁:** `β₁ > 0` — Higher Trends at `t−1` predicts a positive Gold Return at `t`
+| 4 | **Hypothesis Test 1** – Pearson correlation (contemporaneous) |
+| 5 | **Lagged Cross-Correlation (CCF)** – lags −12 to +12 months |
+| 6 | **Hypothesis Test 2** – OLS regression: `Gold_Return[t] ~ Trends[t−1]` (one-sided) |
+| 7 | **Granger Causality** – F-test at lags 1–3 |
 
 ---
 
@@ -56,31 +48,55 @@ packages required):
 
 ```bash
 # From the repository root (R must be installed):
-Rscript analysis.R
+Rscript analysis.R              # Recession Trends vs. Gold
+Rscript analysis_inflation.R    # Inflation Trends vs. Gold
 ```
-
-Results are printed to the console and four plots are saved to `output/`:
-
-| Plot | Description |
-|------|-------------|
-| `output/time_series.png` | Three-panel time-series: gold price level, monthly return, and Trends index |
-| `output/scatter_contemporaneous.png` | Scatter of Trends vs. same-month gold return with regression line |
-| `output/ccf_plot.png` | Cross-correlation function for lags −12 to +12 months |
-| `output/scatter_lag1.png` | Scatter of Trends[t−1] vs. Gold Return[t] (predictive direction) |
 
 ---
 
-## Results (Real Data, Jan 2004 – Jun 2025, n = 258)
+## Results
+
+### Analysis 1: "Recession" Trends vs. Gold (Jan 2004 – Jun 2025, n = 258)
 
 | Test | Result |
 |------|--------|
-| Contemporaneous Pearson r | r = **0.106**, p = 0.090 — *not significant* at α = 0.05 |
+| Contemporaneous Pearson r | r = **0.106**, p = 0.090 — *not significant* |
 | Best CCF lag (Trends leads gold) | lag −11 months: r = 0.091 — *not significant* |
 | 1-month lead regression β₁ | β = 0.011, p (one-sided) = 0.186 — *not significant* |
-| Granger causality (lags 1–3) | p ≥ 0.44 at all lags — *no Granger causality detected* |
+| Granger causality (lags 1–3) | p ≥ 0.44 at all lags — *no Granger causality* |
 
-### Interpretation
+**Interpretation:** No statistically significant correlation found. The slight positive contemporaneous correlation (r ≈ 0.11) is consistent with safe-haven theory but does not reach the 5% significance threshold over the full period.
 
-The analysis finds **no statistically significant correlation** between Google Trends search intensity for "Recession" and monthly gold price returns at any tested lead or lag. While the contemporaneous correlation (r ≈ 0.11) is positive — consistent with the hypothesis that recession anxiety and gold price rises tend to coincide — it does not reach the conventional 5% significance threshold.
+---
 
-This does not rule out a relationship under specific market stress regimes (e.g., the 2008 GFC or 2020 COVID crash), but over the full 2004–2025 period the "Recession" search signal alone is not a reliable linear predictor of gold return direction.
+### Analysis 2: "Inflation" Trends vs. Gold (Jan 2004 – Jun 2025, n = 258)
+
+| Test | Result |
+|------|--------|
+| Contemporaneous Pearson r | r = **0.050**, p = 0.428 — *not significant* |
+| Best CCF lag (Trends leads gold) | lag −10 months: r = **0.129** — ✅ *significant* (|r| > 0.122) |
+| lag −11 months | r = **0.124** — ✅ *significant* |
+| 1-month lead regression β₁ | β = 0.006, p (one-sided) = 0.394 — *not significant* |
+| Granger causality (lag 2) | F = **3.26**, p = **0.040** — ✅ *significant* |
+
+**Interpretation:** The "Inflation" search signal shows a **weak but statistically significant lagged relationship** with gold returns. The CCF reveals that elevated inflation search interest tends to be followed by modestly positive gold returns roughly 10–11 months later. Granger causality is also detected at 2 lags (p = 0.040), suggesting that past inflation search behaviour contains some predictive information beyond gold's own return history. However, no simple 1-month lead relationship exists, and contemporaneous correlation is negligible.
+
+#### Output plots (Inflation analysis)
+
+| Plot | Description |
+|------|-------------|
+| `output/inflation_time_series.png` | Three-panel time-series: gold price, monthly return, Inflation Trends |
+| `output/inflation_scatter_contemporaneous.png` | Scatter: Inflation Trends vs. same-month gold return |
+| `output/inflation_ccf_plot.png` | CCF for lags −12 to +12 months (significant bars in gold) |
+| `output/inflation_scatter_lag1.png` | Scatter: Inflation Trends[t−1] vs. Gold Return[t] |
+
+---
+
+## Comparison Summary
+
+| Signal | Contemp. r | Best lag r | Granger (best p) |
+|--------|-----------|------------|-----------------|
+| "Recession" Trends | 0.106 (p=0.090) | 0.091 @ lag−11 (ns) | p ≥ 0.44 |
+| "Inflation" Trends | 0.050 (p=0.428) | **0.129 @ lag−10 ✅** | **p = 0.040 ✅** |
+
+The **"Inflation"** signal provides marginally stronger evidence of a lagged association with gold returns compared to the "Recession" signal, though neither offers a reliable short-term trading signal on its own.
