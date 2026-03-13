@@ -20,14 +20,10 @@ available leading indicator.
 
 | File | Description |
 |------|-------------|
-| `data/gold_prices.csv` | Monthly average gold prices (USD/troy oz) from the **Bank of England** database.<br>Columns: `Date` (YYYY-MM-DD), `Price_USD` |
-| `data/google_trends_recession.csv` | Global monthly Google Trends index for the search term **"Recession"** (scale 0–100).<br>Columns: `Month` (YYYY-MM), `Recession_Trend` |
+| `gold-300.xls` | Monthly average gold prices (USD/troy oz) from the **Bank of England** database (Feb 2001 – Jun 2025). HTML table format. |
+| `multiTimeline (3).csv` | Global monthly Google Trends index (0–100) for the search term **"Recession"** exported from [trends.google.com](https://trends.google.com) (Jan 2004 – Mar 2026). |
 
-> **Note:** The repository ships with **sample data** (Jan 2004 – Dec 2023)
-> generated for demonstration purposes.  
-> To run the analysis on real data, replace the CSV files with:
-> - Gold prices downloaded from the [Bank of England Statistical Interactive Dataset](https://www.bankofengland.co.uk/boeapps/database/)
-> - Google Trends data exported from [trends.google.com](https://trends.google.com) for the search term "Recession" (worldwide, monthly)
+The two datasets are merged on the overlapping period **Jan 2004 – Jun 2025**, giving **258 monthly observations**.
 
 ---
 
@@ -38,7 +34,7 @@ packages required):
 
 | Step | Method |
 |------|--------|
-| 1 | Load and preprocess gold prices and Google Trends data |
+| 1 | Parse `gold-300.xls` (HTML table) and `multiTimeline (3).csv` |
 | 2 | Compute monthly gold **percentage returns**: `(P_t / P_{t-1} − 1) × 100` |
 | 3 | Plot both time series and monthly returns |
 | 4 | **Hypothesis Test 1** – Pearson correlation between contemporaneous Trends and gold return |
@@ -59,7 +55,7 @@ packages required):
 ## Running the Analysis
 
 ```bash
-# From the repository root:
+# From the repository root (R must be installed):
 Rscript analysis.R
 ```
 
@@ -74,13 +70,17 @@ Results are printed to the console and four plots are saved to `output/`:
 
 ---
 
-## Interpreting the Results
+## Results (Real Data, Jan 2004 – Jun 2025, n = 258)
 
-- A statistically significant **positive** contemporaneous correlation (p < 0.05)
-  would suggest that months with high recession anxiety coincide with rising gold prices.
-- Significant **negative** lags in the CCF (e.g., lag −1) would indicate that
-  elevated Trends *precede* gold price increases — a potential leading indicator.
-- A significant positive `β₁` in the lag-1 regression provides actionable evidence
-  that last month's search intensity predicts a higher gold return this month.
-- Significant Granger causality (p < 0.05 for any lag) strengthens the case that
-  the Trends signal contains information beyond gold's own price history.
+| Test | Result |
+|------|--------|
+| Contemporaneous Pearson r | r = **0.106**, p = 0.090 — *not significant* at α = 0.05 |
+| Best CCF lag (Trends leads gold) | lag −11 months: r = 0.091 — *not significant* |
+| 1-month lead regression β₁ | β = 0.011, p (one-sided) = 0.186 — *not significant* |
+| Granger causality (lags 1–3) | p ≥ 0.44 at all lags — *no Granger causality detected* |
+
+### Interpretation
+
+The analysis finds **no statistically significant correlation** between Google Trends search intensity for "Recession" and monthly gold price returns at any tested lead or lag. While the contemporaneous correlation (r ≈ 0.11) is positive — consistent with the hypothesis that recession anxiety and gold price rises tend to coincide — it does not reach the conventional 5% significance threshold.
+
+This does not rule out a relationship under specific market stress regimes (e.g., the 2008 GFC or 2020 COVID crash), but over the full 2004–2025 period the "Recession" search signal alone is not a reliable linear predictor of gold return direction.

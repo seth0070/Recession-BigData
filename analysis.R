@@ -7,9 +7,9 @@
 #
 # Data sources:
 #   - Monthly gold prices (USD/oz): Bank of England database
-#     File: data/gold_prices.csv  (columns: Date, Price_USD)
+#     File: gold-300.xls  (HTML table exported from stlouisfed/Bank of England)
 #   - Google Trends data for "Recession": Google Trends (global, monthly)
-#     File: data/google_trends_recession.csv  (columns: Month, Recession_Trend)
+#     File: multiTimeline (3).csv  (exported from trends.google.com)
 #
 # Analysis steps:
 #   1. Load and preprocess data
@@ -24,13 +24,38 @@
 # =============================================================================
 
 # ── 1. Load data ──────────────────────────────────────────────────────────────
-gold_raw   <- read.csv("data/gold_prices.csv")
-trends_raw <- read.csv("data/google_trends_recession.csv")
+
+# 1a. Parse gold prices from Bank of England HTML table (gold-300.xls)
+#     The file is an HTML document saved with an .xls extension.
+#     Each data row has the pattern: <td>Mon YYYY</td><td>Price</td><td>Change</td>
+gold_html  <- paste(readLines("gold-300.xls", warn = FALSE), collapse = "\n")
+gold_rows  <- regmatches(gold_html,
+               gregexpr("<td>[^<]+</td><td>[^<]+</td><td>[^<]+</td>",
+                         gold_html))[[1]]
+parse_row  <- function(row) {
+  cells <- regmatches(row, gregexpr("(?<=<td>)[^<]+(?=</td>)", row, perl = TRUE))[[1]]
+  list(month = cells[1], price = cells[2])
+}
+parsed     <- lapply(gold_rows, parse_row)
+
+# Convert "Mon YYYY" -> Date, strip commas from prices (e.g. "1,043.16" -> 1043.16)
+gold_raw <- data.frame(
+  Date      = as.Date(paste0("01 ", sapply(parsed, `[[`, "month")), "%d %b %Y"),
+  Price_USD = as.numeric(gsub(",", "", sapply(parsed, `[[`, "price"))),
+  stringsAsFactors = FALSE
+)
+gold_raw <- gold_raw[order(gold_raw$Date), ]
+
+# 1b. Parse Google Trends CSV (multiTimeline (3).csv)
+#     The file has two header lines before the actual column headers:
+#       Line 1: "Category: All categories"
+#       Line 2: blank
+#       Line 3: "Month,recession: (Worldwide)"   <- real header
+trends_raw  <- read.csv("multiTimeline (3).csv", skip = 2)
+# R converts "recession: (Worldwide)" to "recession...Worldwide." — rename it
+colnames(trends_raw)[colnames(trends_raw) != "Month"] <- "Recession_Trend"
 
 # ── 2. Preprocess gold prices ─────────────────────────────────────────────────
-gold_raw$Date <- as.Date(gold_raw$Date)
-gold_raw      <- gold_raw[order(gold_raw$Date), ]
-
 # Monthly percentage return: (P_t - P_{t-1}) / P_{t-1} * 100
 n <- nrow(gold_raw)
 gold_return <- c(NA, (gold_raw$Price_USD[-1] / gold_raw$Price_USD[-n] - 1) * 100)
