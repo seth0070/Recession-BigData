@@ -81,6 +81,40 @@ Rscript analysis_inflation.R    # Inflation Trends vs. Gold
 
 **Interpretation:** The "Inflation" search signal shows a **weak but statistically significant lagged relationship** with gold returns. The CCF reveals that elevated inflation search interest tends to be followed by modestly positive gold returns roughly 10–11 months later. Granger causality is also detected at 2 lags (p = 0.040), suggesting that past inflation search behaviour contains some predictive information beyond gold's own return history. However, no simple 1-month lead relationship exists, and contemporaneous correlation is negligible.
 
+> **🧒 ELI5 — What does "Granger causality at lag 2" actually mean?**
+>
+> Imagine you are trying to guess how much gold will gain or lose *this month*.
+> One approach is to look at how gold itself moved in the last couple of months —
+> that is already useful.
+>
+> The **Granger causality test** asks a different question:
+> *"If I also peek at how many people were Googling the word 'inflation' over the
+> last two months, can I make a better prediction than if I only used gold's own
+> history?"*
+>
+> At **lag 2** the answer is **yes** (p = 0.040, which is just below the standard
+> 5% threshold). In plain English:
+>
+> > *Knowing the inflation search trend from **two months ago** and **one month ago**
+> > together gives you a small but statistically real improvement in predicting
+> > gold's return this month — on top of what gold's own past returns already tell you.*
+>
+> **Why does this matter?**
+> Google searches are free, public, and available in real time.
+> If past search behaviour genuinely contains information about future gold moves,
+> it could act as a low-cost early-warning signal.
+>
+> **But don't rush to trade on it.** A few important caveats:
+> - The effect is *weak* — the R² of the regression barely budges.
+> - "Granger causality" is a statistical term; it does **not** mean inflation
+>   searches *cause* gold prices to rise in the everyday sense of the word.
+>   It just means the search data is not redundant — it adds a little signal.
+> - The test is significant at lag 2 but not at lags 1 or 3, which suggests the
+>   pattern could be a fluke of this particular dataset rather than a robust law.
+> - Over a 21-year period with many different economic regimes, the relationship
+>   may be driven mainly by a few intense episodes (e.g. the 2022 inflation spike)
+>   rather than holding consistently month to month.
+
 #### Output plots (Inflation analysis)
 
 | Plot | Description |
@@ -100,3 +134,20 @@ Rscript analysis_inflation.R    # Inflation Trends vs. Gold
 | "Inflation" Trends | 0.050 (p=0.428) | **0.129 @ lag−10 ✅** | **p = 0.040 ✅** |
 
 The **"Inflation"** signal provides marginally stronger evidence of a lagged association with gold returns compared to the "Recession" signal, though neither offers a reliable short-term trading signal on its own.
+
+---
+
+## 🧒 Plain-English Glossary
+
+For readers who are not statisticians, here is what each test in the analysis actually measures:
+
+| Term | What it means in plain English |
+|------|-------------------------------|
+| **Pearson correlation (r)** | A number between −1 and +1 that measures how closely two things move together *at the same time*. r = 1 means they rise and fall in perfect lockstep; r = 0 means no relationship at all. |
+| **p-value** | The probability that you would see a result this extreme *purely by chance* if there were really no relationship. A p-value below 0.05 is the conventional threshold for calling a result "statistically significant". |
+| **Lag** | A time offset. "Lag −10" means we compare Inflation Trends from 10 months *earlier* with gold returns *today*. Negative lags test whether Trends *predicts* future gold moves. |
+| **CCF (Cross-Correlation Function)** | Like Pearson correlation, but tested at every possible time offset (lag). The CCF plot shows which lag, if any, gives the strongest link between the two variables. |
+| **OLS regression (β)** | Fits a straight line through the data. β (beta) is the slope — how much gold return we expect to change for each one-unit increase in the Trends index. If β > 0, higher search interest is associated with higher gold returns. |
+| **Granger causality** | A statistical test that asks: "Does knowing the past values of variable X help me predict variable Y *better* than using Y's own past alone?" It does **not** mean X truly causes Y in a physical sense — just that X contains extra useful information. |
+| **F-statistic** | The score produced by the Granger test. A larger F means the extra variable (Trends) adds more predictive power. The p-value tells you whether that improvement is too large to be a fluke. |
+| **Lag 2 (in Granger context)** | The test uses the last **2 months** of Trends data to try to predict this month's gold return. Significant at lag 2 (p = 0.040) means the two-month history of inflation searches adds real (if small) predictive value beyond gold's own history. |
