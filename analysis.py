@@ -1,25 +1,39 @@
 """
 Financial Anxiety (Google Trends) vs Gold Price Analysis
 =========================================================
-Data sources:
-  - Google Trends: 'multiTimeline (4).csv' (monthly 'inflation' search index, 2004-2026)
-  - Gold prices: Monthly average spot prices (USD/troy oz) 2004-01 to 2025-12,
-    sourced from public historical records (World Gold Council / LBMA).
+Data sources  (both files from this repository):
+  - Google Trends : 'multiTimeline (5).csv'
+      Monthly search indices for 5 financial-anxiety keywords
+      (stock market crash, inflation, recession, financial crisis,
+       cost of living) – worldwide, 2004-01 to 2026-03.
+  - Gold prices   : 'gold-300.xls'  (HTML-table file from macrotrends)
+      Monthly average spot price (USD/troy oz), Feb 2001 – Jun 2025.
 
-Analyses performed:
-  1. Descriptive statistics & visualisation of raw series
-  2. Normality tests (Shapiro-Wilk + histograms/Q-Q plots)
-  3. Stationarity tests (ADF, KPSS) on raw and first-differenced series
-  4. Cross-Correlation Function (CCF)
-  5. Lagged OLS regression (undifferenced and differenced data)
-  6. Granger causality test
-  7. ARIMA model for gold prices
-  8. ARIMAX model (gold prices with Google Trends as exogenous variable)
-  9. All key plots saved as PNG files in plots/
+A composite Financial Anxiety Index (FAI) is built as the row-mean of
+the five min-max-normalised keyword series.  All analyses are carried
+out on both the composite FAI and the individual keywords where
+appropriate.
+
+Analyses:
+  1.  Descriptive statistics & time-series plots
+  2.  Normality tests  (Shapiro-Wilk, Jarque-Bera + histograms / Q-Q)
+  3.  Stationarity     (ADF, KPSS) – raw and first-differenced
+  4.  ACF / PACF plots
+  5.  Cross-Correlation Function (CCF)  – undifferenced & differenced
+  6.  Lagged OLS regression             – undifferenced & differenced
+  7.  Granger causality test
+  8.  ARIMA  model for gold prices
+  9.  ARIMAX model (gold + FAI as exogenous)
+  10. Summary dashboard
+
+All plots are written to plots/ inside the repository directory.
 """
+
 
 import os
 import warnings
+from html.parser import HTMLParser
+
 import numpy as np
 import pandas as pd
 import matplotlib
@@ -28,7 +42,7 @@ import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 import seaborn as sns
 from scipy import stats
-from statsmodels.tsa.stattools import adfuller, kpss, ccf, grangercausalitytests
+from statsmodels.tsa.stattools import adfuller, kpss, grangercausalitytests
 from statsmodels.tsa.arima.model import ARIMA
 from statsmodels.graphics.tsaplots import plot_acf, plot_pacf
 from statsmodels.stats.stattools import durbin_watson
@@ -39,511 +53,606 @@ warnings.filterwarnings("ignore")
 # ---------------------------------------------------------------------------
 # 0. Setup
 # ---------------------------------------------------------------------------
-REPO_DIR = os.path.dirname(os.path.abspath(__file__))
+REPO_DIR  = os.path.dirname(os.path.abspath(__file__))
 PLOTS_DIR = os.path.join(REPO_DIR, "plots")
 os.makedirs(PLOTS_DIR, exist_ok=True)
 
 sns.set_theme(style="whitegrid", palette="muted")
 plt.rcParams.update({"figure.dpi": 120, "figure.figsize": (12, 5)})
 
+KW_COLORS = {
+    "stock_market_crash": "#E74C3C",
+    "inflation":          "#F39C12",
+    "recession":          "#27AE60",
+    "financial_crisis":   "#2980B9",
+    "cost_of_living":     "#8E44AD",
+    "FAI":                "#2C3E50",
+}
 
-def save_fig(name):
+
+def save_fig(name: str) -> None:
     path = os.path.join(PLOTS_DIR, name)
     plt.savefig(path, bbox_inches="tight")
     plt.close()
     print(f"  Saved: plots/{name}")
 
 
-def section(title):
+def section(title: str) -> None:
     print("\n" + "=" * 70)
     print(f"  {title}")
     print("=" * 70)
 
 
 # ---------------------------------------------------------------------------
-# 1. Load Google Trends data
+# 1. Load & parse gold-300.xls  (HTML disguised as XLS)
 # ---------------------------------------------------------------------------
 section("1. Loading data")
 
-gt_path = os.path.join(REPO_DIR, "multiTimeline (4).csv")
-gt_raw = pd.read_csv(gt_path, skiprows=1)
-gt_raw.columns = ["Month", "Inflation_GTrends"]
-gt_raw["Month"] = pd.to_datetime(gt_raw["Month"], format="%Y-%m")
-gt_raw = gt_raw.sort_values("Month").reset_index(drop=True)
-print(f"Google Trends: {gt_raw['Month'].min().date()} → {gt_raw['Month'].max().date()} "
-      f"({len(gt_raw)} months)")
 
-# ---------------------------------------------------------------------------
-# 2. Embedded monthly gold price data (USD/troy oz, LBMA monthly averages)
-# ---------------------------------------------------------------------------
-# Source: World Gold Council / LBMA historical data (publicly available figures)
-gold_records = {
-    # 2004
-    "2004-01": 414.1, "2004-02": 405.5, "2004-03": 406.8, "2004-04": 403.5,
-    "2004-05": 383.5, "2004-06": 392.2, "2004-07": 398.7, "2004-08": 400.5,
-    "2004-09": 405.4, "2004-10": 420.5, "2004-11": 439.4, "2004-12": 441.8,
-    # 2005
-    "2005-01": 424.2, "2005-02": 422.8, "2005-03": 434.2, "2005-04": 429.3,
-    "2005-05": 422.4, "2005-06": 430.7, "2005-07": 424.5, "2005-08": 437.9,
-    "2005-09": 473.7, "2005-10": 470.7, "2005-11": 476.7, "2005-12": 509.8,
-    # 2006
-    "2006-01": 549.6, "2006-02": 555.0, "2006-03": 557.1, "2006-04": 610.7,
-    "2006-05": 675.4, "2006-06": 596.2, "2006-07": 632.9, "2006-08": 632.6,
-    "2006-09": 598.3, "2006-10": 585.8, "2006-11": 627.8, "2006-12": 636.3,
-    # 2007
-    "2007-01": 632.0, "2007-02": 664.6, "2007-03": 661.2, "2007-04": 679.4,
-    "2007-05": 666.9, "2007-06": 655.5, "2007-07": 665.5, "2007-08": 665.4,
-    "2007-09": 712.7, "2007-10": 754.6, "2007-11": 806.3, "2007-12": 833.3,
-    # 2008
-    "2008-01": 889.6, "2008-02": 922.3, "2008-03": 968.4, "2008-04": 909.7,
-    "2008-05": 888.7, "2008-06": 889.5, "2008-07": 939.8, "2008-08": 839.0,
-    "2008-09": 829.9, "2008-10": 806.6, "2008-11": 760.8, "2008-12": 816.1,
-    # 2009
-    "2009-01": 858.7, "2009-02": 943.2, "2009-03": 924.3, "2009-04": 890.2,
-    "2009-05": 928.6, "2009-06": 945.7, "2009-07": 934.2, "2009-08": 949.1,
-    "2009-09": 996.2, "2009-10":1043.2, "2009-11":1127.0, "2009-12":1134.7,
-    # 2010
-    "2010-01":1118.4, "2010-02":1095.4, "2010-03":1113.3, "2010-04":1149.7,
-    "2010-05":1204.5, "2010-06":1227.5, "2010-07":1193.8, "2010-08":1214.9,
-    "2010-09":1271.0, "2010-10":1343.5, "2010-11":1370.5, "2010-12":1390.6,
-    # 2011
-    "2011-01":1356.4, "2011-02":1372.7, "2011-03":1424.0, "2011-04":1473.8,
-    "2011-05":1511.5, "2011-06":1528.7, "2011-07":1572.8, "2011-08":1757.6,
-    "2011-09":1771.9, "2011-10":1665.2, "2011-11":1740.6, "2011-12":1652.0,
-    # 2012
-    "2012-01":1655.9, "2012-02":1722.6, "2012-03":1676.7, "2012-04":1644.9,
-    "2012-05":1582.9, "2012-06":1598.3, "2012-07":1592.2, "2012-08":1626.8,
-    "2012-09":1740.7, "2012-10":1746.3, "2012-11":1726.3, "2012-12":1687.0,
-    # 2013
-    "2013-01":1670.6, "2013-02":1626.7, "2013-03":1592.2, "2013-04":1485.6,
-    "2013-05":1415.3, "2013-06":1285.0, "2013-07":1283.7, "2013-08":1370.8,
-    "2013-09":1351.8, "2013-10":1316.0, "2013-11":1275.4, "2013-12":1204.3,
-    # 2014
-    "2014-01":1244.3, "2014-02":1292.1, "2014-03":1337.0, "2014-04":1299.4,
-    "2014-05":1289.4, "2014-06":1276.0, "2014-07":1312.2, "2014-08":1295.8,
-    "2014-09":1240.5, "2014-10":1222.7, "2014-11":1175.5, "2014-12":1199.6,
-    # 2015
-    "2015-01":1251.1, "2015-02":1228.8, "2015-03":1182.5, "2015-04":1200.3,
-    "2015-05":1191.2, "2015-06":1175.7, "2015-07":1130.2, "2015-08":1117.9,
-    "2015-09":1124.2, "2015-10":1156.5, "2015-11":1084.9, "2015-12":1062.6,
-    # 2016
-    "2016-01":1097.0, "2016-02":1190.1, "2016-03":1237.5, "2016-04":1242.7,
-    "2016-05":1264.2, "2016-06":1285.9, "2016-07":1334.0, "2016-08":1348.8,
-    "2016-09":1322.9, "2016-10":1267.3, "2016-11":1218.5, "2016-12":1159.3,
-    # 2017
-    "2017-01":1210.8, "2017-02":1234.8, "2017-03":1226.6, "2017-04":1268.4,
-    "2017-05":1253.8, "2017-06":1256.9, "2017-07":1258.0, "2017-08":1289.7,
-    "2017-09":1313.7, "2017-10":1279.5, "2017-11":1278.5, "2017-12":1303.8,
-    # 2018
-    "2018-01":1330.6, "2018-02":1329.2, "2018-03":1323.9, "2018-04":1330.7,
-    "2018-05":1305.7, "2018-06":1278.1, "2018-07":1228.8, "2018-08":1211.4,
-    "2018-09":1193.5, "2018-10":1224.9, "2018-11":1222.5, "2018-12":1250.9,
-    # 2019
-    "2019-01":1291.1, "2019-02":1312.4, "2019-03":1303.8, "2019-04":1280.4,
-    "2019-05":1285.9, "2019-06":1347.0, "2019-07":1413.1, "2019-08":1511.5,
-    "2019-09":1498.8, "2019-10":1489.5, "2019-11":1466.0, "2019-12":1478.7,
-    # 2020
-    "2020-01":1565.0, "2020-02":1585.7, "2020-03":1586.3, "2020-04":1684.9,
-    "2020-05":1717.2, "2020-06":1731.0, "2020-07":1897.0, "2020-08":1970.3,
-    "2020-09":1908.6, "2020-10":1879.9, "2020-11":1874.0, "2020-12":1878.7,
-    # 2021
-    "2021-01":1855.5, "2021-02":1818.0, "2021-03":1726.4, "2021-04":1778.2,
-    "2021-05":1831.0, "2021-06":1827.2, "2021-07":1813.5, "2021-08":1793.7,
-    "2021-09":1791.3, "2021-10":1792.8, "2021-11":1818.0, "2021-12":1804.0,
-    # 2022
-    "2022-01":1815.5, "2022-02":1876.9, "2022-03":1949.2, "2022-04":1947.7,
-    "2022-05":1851.4, "2022-06":1836.5, "2022-07":1727.6, "2022-08":1746.5,
-    "2022-09":1660.2, "2022-10":1634.4, "2022-11":1729.2, "2022-12":1779.5,
-    # 2023
-    "2023-01":1876.0, "2023-02":1852.8, "2023-03":1889.0, "2023-04":1993.0,
-    "2023-05":1978.7, "2023-06":1914.4, "2023-07":1942.7, "2023-08":1917.8,
-    "2023-09":1920.2, "2023-10":1978.1, "2023-11":1979.9, "2023-12":2018.5,
-    # 2024
-    "2024-01":2037.6, "2024-02":2052.4, "2024-03":2161.7, "2024-04":2299.1,
-    "2024-05":2336.7, "2024-06":2327.0, "2024-07":2426.1, "2024-08":2490.5,
-    "2024-09":2526.5, "2024-10":2729.5, "2024-11":2661.3, "2024-12":2626.0,
-    # 2025
-    "2025-01":2757.7, "2025-02":2872.8, "2025-03":2980.0, "2025-04":3122.0,
-    "2025-05":3270.0, "2025-06":3250.0, "2025-07":3365.0, "2025-08":3500.0,
-    "2025-09":3620.0, "2025-10":3710.0, "2025-11":3680.0, "2025-12":3700.0,
-}
+class _TableParser(HTMLParser):
+    """Minimal HTML table row parser."""
+    def __init__(self):
+        super().__init__()
+        self._in_td = False
+        self.rows: list[list[str]] = []
+        self._cur: list[str] = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag == "td":
+            self._in_td = True
+        elif tag == "tr":
+            self._cur = []
+
+    def handle_endtag(self, tag):
+        if tag == "td":
+            self._in_td = False
+        elif tag == "tr" and self._cur:
+            self.rows.append(self._cur[:])
+
+    def handle_data(self, data):
+        if self._in_td:
+            self._cur.append(data.strip())
+
+
+gold_path = os.path.join(REPO_DIR, "gold-300.xls")
+with open(gold_path, encoding="utf-8") as fh:
+    _html = fh.read()
+
+_parser = _TableParser()
+_parser.feed(_html)
 
 gold_df = pd.DataFrame(
-    [(pd.to_datetime(k + "-01"), v) for k, v in gold_records.items()],
-    columns=["Month", "Gold_Price"]
-).sort_values("Month").reset_index(drop=True)
-print(f"Gold prices:   {gold_df['Month'].min().date()} → {gold_df['Month'].max().date()} "
-      f"({len(gold_df)} months)")
+    [(row[0], float(row[1].replace(",", ""))) for row in _parser.rows if len(row) >= 2],
+    columns=["Month", "Gold_Price"],
+)
+gold_df["Month"] = pd.to_datetime(gold_df["Month"], format="%b %Y")
+gold_df = gold_df.sort_values("Month").reset_index(drop=True)
+print(
+    f"Gold prices   : {gold_df['Month'].min().date()} → "
+    f"{gold_df['Month'].max().date()}  ({len(gold_df)} months)"
+)
 
 # ---------------------------------------------------------------------------
-# 3. Merge and align
+# 2. Load multiTimeline (5).csv – five financial-anxiety keywords
 # ---------------------------------------------------------------------------
-df = pd.merge(gt_raw, gold_df, on="Month", how="inner")
+gt_path = os.path.join(REPO_DIR, "multiTimeline (5).csv")
+gt_raw = pd.read_csv(gt_path, skiprows=1)
+gt_raw.columns = [
+    "Month",
+    "stock_market_crash",
+    "inflation",
+    "recession",
+    "financial_crisis",
+    "cost_of_living",
+]
+gt_raw["Month"] = pd.to_datetime(gt_raw["Month"], format="%Y-%m")
+gt_raw = gt_raw.sort_values("Month").reset_index(drop=True)
+KEYWORDS = ["stock_market_crash", "inflation", "recession",
+            "financial_crisis", "cost_of_living"]
+print(
+    f"Google Trends : {gt_raw['Month'].min().date()} → "
+    f"{gt_raw['Month'].max().date()}  ({len(gt_raw)} months)"
+)
+
+# ---------------------------------------------------------------------------
+# 3. Build composite Financial Anxiety Index (FAI) & merge
+# ---------------------------------------------------------------------------
+# Min-max normalise each keyword to [0, 1], then average
+for kw in KEYWORDS:
+    mn, mx = gt_raw[kw].min(), gt_raw[kw].max()
+    gt_raw[kw + "_norm"] = (gt_raw[kw] - mn) / (mx - mn)
+
+norm_cols = [kw + "_norm" for kw in KEYWORDS]
+gt_raw["FAI"] = gt_raw[norm_cols].mean(axis=1)
+
+# Merge on Month (inner join – common period only)
+df = pd.merge(
+    gt_raw[["Month"] + KEYWORDS + ["FAI"]],
+    gold_df,
+    on="Month",
+    how="inner",
+)
 df = df.set_index("Month")
 df.index.freq = "MS"
-print(f"Merged dataset: {df.index.min().date()} → {df.index.max().date()} "
-      f"({len(df)} months)")
-print(df.describe().to_string())
+print(
+    f"Merged period : {df.index.min().date()} → "
+    f"{df.index.max().date()}  ({len(df)} months)"
+)
+print("\nDescriptive statistics:")
+print(df[KEYWORDS + ["FAI", "Gold_Price"]].describe().to_string())
 
-gt  = df["Inflation_GTrends"]
-gld = df["Gold_Price"]
-
-# First differences
-d_gt  = gt.diff().dropna()
+gld = df["Gold_Price"]          # gold price series
+fai = df["FAI"]                 # composite anxiety index
 d_gld = gld.diff().dropna()
+d_fai = fai.diff().dropna()
 
 # ---------------------------------------------------------------------------
-# 4. Raw series visualisation
+# 4. Raw-series visualisation (individual keywords + gold)
 # ---------------------------------------------------------------------------
-section("2. Raw series visualisation")
+section("2. Raw-series visualisation")
 
-fig, axes = plt.subplots(2, 1, figsize=(14, 8), sharex=True)
-axes[0].plot(gld.index, gld.values, color="goldenrod", linewidth=1.5)
-axes[0].set_title("Monthly Gold Price (USD/troy oz)", fontsize=13)
-axes[0].set_ylabel("Price (USD)")
-axes[1].plot(gt.index, gt.values, color="steelblue", linewidth=1.5)
-axes[1].set_title("Google Trends – 'Inflation' Search Index", fontsize=13)
-axes[1].set_ylabel("Search Index (0-100)")
-plt.xlabel("Date")
+fig, axes = plt.subplots(3, 2, figsize=(16, 12), sharex=True)
+axes = axes.flat
+
+# Panel 1 – Gold price
+ax = axes[0]
+ax.plot(gld.index, gld.values, color="goldenrod", linewidth=1.5)
+ax.set_title("Gold Price (USD/troy oz)", fontsize=11)
+ax.set_ylabel("USD")
+
+# Panels 2-6 – each keyword
+for idx, kw in enumerate(KEYWORDS, start=1):
+    ax = axes[idx]
+    ax.plot(df.index, df[kw].values, color=KW_COLORS[kw], linewidth=1.2)
+    ax.set_title(f"GTrends – {kw.replace('_', ' ').title()}", fontsize=11)
+    ax.set_ylabel("Index (0-100)")
+
 plt.tight_layout()
-save_fig("01_raw_series.png")
+save_fig("01_raw_keywords.png")
+
+# Gold + FAI dual-axis overlay
+fig, ax1 = plt.subplots(figsize=(14, 5))
+ax1.plot(gld.index, gld.values, color="goldenrod", linewidth=1.8,
+         label="Gold Price (USD)")
+ax1.set_ylabel("Gold Price (USD/oz)", color="goldenrod")
+ax1.tick_params(axis="y", labelcolor="goldenrod")
+ax2 = ax1.twinx()
+ax2.plot(fai.index, fai.values, color=KW_COLORS["FAI"], linewidth=1.2,
+         alpha=0.75, label="Financial Anxiety Index (FAI)")
+ax2.set_ylabel("FAI (0-1 composite)", color=KW_COLORS["FAI"])
+ax2.tick_params(axis="y", labelcolor=KW_COLORS["FAI"])
+lines1, labels1 = ax1.get_legend_handles_labels()
+lines2, labels2 = ax2.get_legend_handles_labels()
+ax1.legend(lines1 + lines2, labels1 + labels2, loc="upper left", fontsize=9)
+ax1.set_title("Gold Price vs Composite Financial Anxiety Index (FAI)", fontsize=13)
+plt.tight_layout()
+save_fig("02_gold_vs_fai.png")
 
 # ---------------------------------------------------------------------------
-# 5. Normality tests
+# 5. Correlation heatmap
+# ---------------------------------------------------------------------------
+fig, ax = plt.subplots(figsize=(9, 7))
+corr_cols = KEYWORDS + ["FAI", "Gold_Price"]
+corr_matrix = df[corr_cols].corr()
+mask = np.triu(np.ones_like(corr_matrix, dtype=bool), k=1)
+sns.heatmap(
+    corr_matrix, annot=True, fmt=".2f", cmap="coolwarm",
+    center=0, vmin=-1, vmax=1, ax=ax,
+    xticklabels=[c.replace("_", "\n") for c in corr_cols],
+    yticklabels=[c.replace("_", "\n") for c in corr_cols],
+)
+ax.set_title("Pearson Correlation Matrix (raw series)", fontsize=12)
+plt.tight_layout()
+save_fig("03_correlation_heatmap.png")
+
+# ---------------------------------------------------------------------------
+# 6. Normality tests
 # ---------------------------------------------------------------------------
 section("3. Normality Tests")
 
-def normality_report(series, name):
-    stat_sw, p_sw = stats.shapiro(series.dropna())
-    stat_jb, p_jb, _, _ = stats.jarque_bera(series.dropna())
-    print(f"\n  {name}:")
-    print(f"    Shapiro-Wilk  W={stat_sw:.4f}, p={p_sw:.4e} "
-          f"{'(NOT normal)' if p_sw < 0.05 else '(normal)'}")
-    print(f"    Jarque-Bera   stat={stat_jb:.4f}, p={p_jb:.4e} "
-          f"{'(NOT normal)' if p_jb < 0.05 else '(normal)'}")
 
-for ser, nm in [(gld, "Gold Price (raw)"),
-                (d_gld, "Gold Price (Δ1)"),
-                (gt,  "Inflation GTrends (raw)"),
-                (d_gt, "Inflation GTrends (Δ1)")]:
-    normality_report(ser, nm)
+def normality_report(series: pd.Series, name: str) -> None:
+    data = series.dropna()
+    sw_stat, sw_p = stats.shapiro(data)
+    jb_result = stats.jarque_bera(data)
+    jb_stat, jb_p = jb_result.statistic, jb_result.pvalue
+    print(
+        f"  {name:<35s}  "
+        f"SW p={sw_p:.3e} {'NOT NORMAL' if sw_p < 0.05 else 'normal':12s}  "
+        f"JB p={jb_p:.3e} {'NOT NORMAL' if jb_p < 0.05 else 'normal':12s}"
+    )
 
-# Histogram + Q-Q plots
-fig, axes = plt.subplots(2, 4, figsize=(18, 8))
-pairs = [
-    (gld,   "Gold Price (raw)",    "goldenrod"),
-    (d_gld, "Gold Price (Δ1)",     "orange"),
-    (gt,    "GTrends (raw)",       "steelblue"),
-    (d_gt,  "GTrends (Δ1)",        "cornflowerblue"),
+
+print(f"\n  {'Series':<35s}  {'Shapiro-Wilk':<25s}  {'Jarque-Bera'}")
+print("  " + "-" * 80)
+for kw in KEYWORDS + ["FAI"]:
+    normality_report(df[kw],         f"{kw} (raw)")
+    normality_report(df[kw].diff(),  f"{kw} (Δ1)")
+normality_report(gld,   "Gold Price (raw)")
+normality_report(d_gld, "Gold Price (Δ1)")
+
+# Histogram + Q-Q for FAI and Gold (raw and differenced)
+series_4plot = [
+    (gld,   "Gold Price (raw)",  "goldenrod"),
+    (d_gld, "Gold Price (Δ1)",   "orange"),
+    (fai,   "FAI (raw)",         KW_COLORS["FAI"]),
+    (d_fai, "FAI (Δ1)",          "cornflowerblue"),
 ]
-for col, (ser, title, col_color) in enumerate(pairs):
+fig, axes = plt.subplots(2, 4, figsize=(20, 8))
+for col, (ser, title, col_color) in enumerate(series_4plot):
     data = ser.dropna()
     # Histogram
     ax = axes[0, col]
     ax.hist(data, bins=30, color=col_color, edgecolor="white", alpha=0.8, density=True)
     xmin, xmax = ax.get_xlim()
-    x = np.linspace(xmin, xmax, 200)
-    ax.plot(x, stats.norm.pdf(x, data.mean(), data.std()), "k--", linewidth=1.5)
+    x_line = np.linspace(xmin, xmax, 200)
+    ax.plot(x_line, stats.norm.pdf(x_line, data.mean(), data.std()),
+            "k--", linewidth=1.5)
     ax.set_title(f"Histogram\n{title}", fontsize=10)
-    # Q-Q plot
+    # Q-Q
     ax2 = axes[1, col]
-    (osm, osr), (slope, intercept, r) = stats.probplot(data)
-    ax2.scatter(osm, osr, s=8, alpha=0.6, color=col_color)
+    (osm, osr), (slope, intercept, _r) = stats.probplot(data)
+    ax2.scatter(osm, osr, s=10, alpha=0.6, color=col_color)
     ax2.plot(osm, slope * np.array(osm) + intercept, "r--", linewidth=1.5)
     ax2.set_title(f"Q-Q Plot\n{title}", fontsize=10)
     ax2.set_xlabel("Theoretical quantiles")
     ax2.set_ylabel("Sample quantiles")
-
 plt.tight_layout()
-save_fig("02_normality.png")
+save_fig("04_normality.png")
 
 # ---------------------------------------------------------------------------
-# 6. Stationarity tests
+# 7. Stationarity tests (ADF + KPSS)
 # ---------------------------------------------------------------------------
 section("4. Stationarity Tests (ADF & KPSS)")
 
-def stationarity_report(series, name):
+
+def stationarity_report(series: pd.Series, name: str) -> None:
     data = series.dropna()
     adf_stat, adf_p, _, _, adf_cv, _ = adfuller(data, autolag="AIC")
     try:
-        kpss_stat, kpss_p, _, kpss_cv = kpss(data, regression="c", nlags="auto")
+        kpss_stat, kpss_p, _, _ = kpss(data, regression="c", nlags="auto")
     except Exception:
-        kpss_stat, kpss_p = np.nan, np.nan
-        kpss_cv = {}
-    print(f"\n  {name}:")
-    print(f"    ADF  stat={adf_stat:.4f}, p={adf_p:.4e}  "
-          f"1%:{adf_cv['1%']:.3f} 5%:{adf_cv['5%']:.3f} "
-          f"→ {'STATIONARY' if adf_p < 0.05 else 'NON-STATIONARY'}")
-    print(f"    KPSS stat={kpss_stat:.4f}, p={kpss_p:.4e}  "
-          f"→ {'NON-STATIONARY' if kpss_p < 0.05 else 'STATIONARY'}")
+        kpss_stat, kpss_p = float("nan"), float("nan")
+    adf_conc  = "STATIONARY"     if adf_p  < 0.05 else "non-stationary"
+    kpss_conc = "NON-STATIONARY" if kpss_p < 0.05 else "stationary"
+    print(
+        f"  {name:<35s}  "
+        f"ADF p={adf_p:.3e} ({adf_conc:14s})  "
+        f"KPSS p={kpss_p:.3e} ({kpss_conc})"
+    )
 
-for ser, nm in [(gld, "Gold Price (raw)"),
-                (d_gld, "Gold Price (Δ1)"),
-                (gt,  "Inflation GTrends (raw)"),
-                (d_gt, "Inflation GTrends (Δ1)")]:
-    stationarity_report(ser, nm)
 
-# Rolling mean/std plot
-fig, axes = plt.subplots(2, 2, figsize=(16, 8))
-plot_pairs = [
-    (gld,   "Gold Price (raw)",    "goldenrod"),
-    (d_gld, "Gold Price (Δ1)",     "orange"),
-    (gt,    "GTrends (raw)",       "steelblue"),
-    (d_gt,  "GTrends (Δ1)",        "cornflowerblue"),
-]
-for ax, (ser, title, col_color) in zip(axes.flat, plot_pairs):
+print(f"\n  {'Series':<35s}  {'ADF':<35s}  {'KPSS'}")
+print("  " + "-" * 95)
+for kw in KEYWORDS + ["FAI"]:
+    stationarity_report(df[kw],        f"{kw} (raw)")
+    stationarity_report(df[kw].diff(), f"{kw} (Δ1)")
+stationarity_report(gld,   "Gold Price (raw)")
+stationarity_report(d_gld, "Gold Price (Δ1)")
+
+# Rolling mean / std plot for FAI and Gold
+fig, axes = plt.subplots(2, 2, figsize=(16, 9))
+for ax, (ser, title, col_color) in zip(axes.flat, [
+    (gld,   "Gold Price (raw)",   "goldenrod"),
+    (d_gld, "Gold Price (Δ1)",    "orange"),
+    (fai,   "FAI (raw)",          KW_COLORS["FAI"]),
+    (d_fai, "FAI (Δ1)",           "cornflowerblue"),
+]):
     data = ser.dropna()
-    roll_mean = data.rolling(12).mean()
-    roll_std  = data.rolling(12).std()
-    ax.plot(data.index, data.values, color=col_color, linewidth=0.8, label="Series", alpha=0.7)
-    ax.plot(roll_mean.index, roll_mean.values, "k-", linewidth=2, label="Rolling Mean (12m)")
-    ax.plot(roll_std.index,  roll_std.values,  "r--", linewidth=1.5, label="Rolling Std (12m)")
+    rm = data.rolling(12).mean()
+    rs = data.rolling(12).std()
+    ax.plot(data.index, data.values, color=col_color, linewidth=0.8,
+            alpha=0.6, label="Series")
+    ax.plot(rm.index, rm.values, "k-", linewidth=2,   label="Rolling mean (12m)")
+    ax.plot(rs.index, rs.values, "r--", linewidth=1.5, label="Rolling std  (12m)")
     ax.set_title(title, fontsize=11)
     ax.legend(fontsize=8)
 plt.tight_layout()
-save_fig("03_stationarity_rolling.png")
+save_fig("05_stationarity_rolling.png")
 
-# ACF / PACF plots (raw)
+# ACF / PACF
 fig, axes = plt.subplots(2, 2, figsize=(16, 8))
-plot_acf(gld,  ax=axes[0, 0], lags=36, title="ACF – Gold Price (raw)")
-plot_pacf(gld, ax=axes[0, 1], lags=36, title="PACF – Gold Price (raw)", method="ywm")
-plot_acf(gt,   ax=axes[1, 0], lags=36, title="ACF – Inflation GTrends (raw)")
-plot_pacf(gt,  ax=axes[1, 1], lags=36, title="PACF – Inflation GTrends (raw)", method="ywm")
+plot_acf( gld,  ax=axes[0, 0], lags=36, title="ACF – Gold Price (raw)")
+plot_pacf(gld,  ax=axes[0, 1], lags=36, title="PACF – Gold Price (raw)",  method="ywm")
+plot_acf( fai,  ax=axes[1, 0], lags=36, title="ACF – FAI (raw)")
+plot_pacf(fai,  ax=axes[1, 1], lags=36, title="PACF – FAI (raw)",         method="ywm")
 plt.tight_layout()
-save_fig("04_acf_pacf_raw.png")
+save_fig("06_acf_pacf_raw.png")
 
 fig, axes = plt.subplots(2, 2, figsize=(16, 8))
-plot_acf(d_gld,  ax=axes[0, 0], lags=36, title="ACF – Gold Price (Δ1)")
+plot_acf( d_gld, ax=axes[0, 0], lags=36, title="ACF – Gold Price (Δ1)")
 plot_pacf(d_gld, ax=axes[0, 1], lags=36, title="PACF – Gold Price (Δ1)", method="ywm")
-plot_acf(d_gt,   ax=axes[1, 0], lags=36, title="ACF – Inflation GTrends (Δ1)")
-plot_pacf(d_gt,  ax=axes[1, 1], lags=36, title="PACF – Inflation GTrends (Δ1)", method="ywm")
+plot_acf( d_fai, ax=axes[1, 0], lags=36, title="ACF – FAI (Δ1)")
+plot_pacf(d_fai, ax=axes[1, 1], lags=36, title="PACF – FAI (Δ1)",        method="ywm")
 plt.tight_layout()
-save_fig("05_acf_pacf_diff.png")
+save_fig("07_acf_pacf_diff.png")
 
 # ---------------------------------------------------------------------------
-# 7. Cross-Correlation Function (CCF)
+# 8. Cross-Correlation Function (CCF)
 # ---------------------------------------------------------------------------
 section("5. Cross-Correlation Function (CCF)")
 
 MAX_LAGS = 24
 
-def plot_ccf(x, y, x_name, y_name, max_lags, filename, differenced=False):
-    """Compute and plot CCF of x on y (x leads y at positive lags)."""
-    x_std = (x - x.mean()) / x.std()
-    y_std = (y - y.mean()) / y.std()
-    corrs = []
-    lags_range = range(-max_lags, max_lags + 1)
-    n = len(x_std)
-    for lag in lags_range:
-        if lag >= 0:
-            c = np.corrcoef(x_std.iloc[:n-lag] if lag > 0 else x_std,
-                            y_std.iloc[lag:] if lag > 0 else y_std)[0, 1]
-        else:
-            c = np.corrcoef(y_std.iloc[:n+lag],
-                            x_std.iloc[-lag:])[0, 1]
-        corrs.append(c)
 
+def compute_ccf_series(x: pd.Series, y: pd.Series, max_lags: int):
+    """Return arrays (lags, correlations, ±95 % confidence bound)."""
+    xs = (x - x.mean()) / x.std()
+    ys = (y - y.mean()) / y.std()
+    n  = len(xs)
+    lags = list(range(-max_lags, max_lags + 1))
+    corrs = []
+    for lag in lags:
+        if lag == 0:
+            c = np.corrcoef(xs, ys)[0, 1]
+        elif lag > 0:
+            c = np.corrcoef(xs.iloc[: n - lag], ys.iloc[lag:])[0, 1]
+        else:  # lag < 0
+            c = np.corrcoef(ys.iloc[: n + lag], xs.iloc[-lag:])[0, 1]
+        corrs.append(c)
     conf = 1.96 / np.sqrt(n)
+    return np.array(lags), np.array(corrs), conf
+
+
+def plot_ccf_bar(x, y, x_name, y_name, max_lags, filename, differenced=False):
+    lags, corrs, conf = compute_ccf_series(x, y, max_lags)
     fig, ax = plt.subplots(figsize=(14, 5))
-    colors = ["steelblue" if abs(c) < conf else "crimson" for c in corrs]
-    ax.bar(list(lags_range), corrs, color=colors, width=0.8, edgecolor="white")
-    ax.axhline(conf,  color="gray", linestyle="--", linewidth=1, label=f"±95% CI ({conf:.3f})")
+    colors = ["crimson" if abs(c) >= conf else "steelblue" for c in corrs]
+    ax.bar(lags, corrs, color=colors, width=0.8, edgecolor="white")
+    ax.axhline( conf, color="gray", linestyle="--", linewidth=1,
+                label=f"±95 % CI (±{conf:.3f})")
     ax.axhline(-conf, color="gray", linestyle="--", linewidth=1)
     ax.axvline(0, color="black", linewidth=0.8, linestyle=":")
-    ax.set_xlabel(f"Lag (months)  [negative = {y_name} leads; positive = {x_name} leads]")
-    ax.set_ylabel("Correlation")
     tag = "Differenced" if differenced else "Undifferenced"
+    ax.set_xlabel(
+        f"Lag (months) — negative: {y_name} leads; positive: {x_name} leads"
+    )
+    ax.set_ylabel("Correlation")
     ax.set_title(f"CCF: {x_name} → {y_name}  ({tag})")
     ax.legend()
     plt.tight_layout()
     save_fig(filename)
-
-    # Print significant lags
-    sig_lags = [(lag, c) for lag, c in zip(lags_range, corrs) if abs(c) >= conf]
+    sig = [(l, c) for l, c in zip(lags, corrs) if abs(c) >= conf]
     print(f"\n  Significant lags (|r| ≥ {conf:.3f}):")
-    for lag, c in sig_lags:
-        print(f"    lag={lag:+3d}  r={c:.4f}")
+    for l, c in sig:
+        print(f"    lag={l:+3d}  r={c:.4f}")
 
-plot_ccf(gt, gld, "GTrends", "Gold Price", MAX_LAGS,
-         "06_ccf_undiff.png", differenced=False)
-plot_ccf(d_gt, d_gld, "GTrends (Δ1)", "Gold Price (Δ1)", MAX_LAGS,
-         "07_ccf_diff.png", differenced=True)
+
+# Composite FAI
+plot_ccf_bar(fai,   gld,   "FAI",    "Gold Price", MAX_LAGS,
+             "08_ccf_fai_undiff.png",   differenced=False)
+plot_ccf_bar(d_fai, d_gld, "ΔFAI",   "ΔGold",      MAX_LAGS,
+             "09_ccf_fai_diff.png",    differenced=True)
+
+# Individual keywords (differenced) – all in one figure
+fig, axes = plt.subplots(len(KEYWORDS), 1, figsize=(14, 4 * len(KEYWORDS)))
+for ax, kw in zip(axes, KEYWORDS):
+    d_kw = df[kw].diff().dropna()
+    lags, corrs, conf = compute_ccf_series(d_kw, d_gld, MAX_LAGS)
+    colors = ["crimson" if abs(c) >= conf else "steelblue" for c in corrs]
+    ax.bar(lags, corrs, color=colors, width=0.8, edgecolor="white")
+    ax.axhline( conf, color="gray", linestyle="--", linewidth=1)
+    ax.axhline(-conf, color="gray", linestyle="--", linewidth=1)
+    ax.axvline(0, color="black", linewidth=0.8, linestyle=":")
+    ax.set_title(f"CCF (Δ): {kw.replace('_',' ').title()} → Gold Price", fontsize=10)
+    ax.set_ylabel("r")
+plt.tight_layout()
+save_fig("10_ccf_all_keywords_diff.png")
 
 # ---------------------------------------------------------------------------
-# 8. Lagged OLS Regression
+# 9. Lagged OLS regression
 # ---------------------------------------------------------------------------
 section("6. Lagged OLS Regression")
 
 BEST_LAGS = [1, 3, 6, 12]
 
 
-def lagged_ols(y, x, lags, label):
-    """Run OLS: y_t = b0 + b1*x_{t-lag} for each lag."""
+def lagged_ols(y: pd.Series, x: pd.Series, lags: list[int], label: str) -> pd.DataFrame:
     results = []
     for lag in lags:
-        x_lag = x.shift(lag).dropna()
-        aligned = pd.concat([y, x_lag], axis=1).dropna()
-        aligned.columns = ["y", "x"]
-        X = sm.add_constant(aligned["x"])
-        model = sm.OLS(aligned["y"], X).fit()
+        x_lag = x.shift(lag)
+        tmp = pd.concat([y, x_lag], axis=1).dropna()
+        tmp.columns = ["y", "x"]
+        X = sm.add_constant(tmp["x"])
+        model = sm.OLS(tmp["y"], X).fit()
         dw = durbin_watson(model.resid)
         results.append({
-            "Lag": lag, "Coef": model.params["x"],
-            "t-stat": model.tvalues["x"], "p-value": model.pvalues["x"],
-            "R²": model.rsquared, "AIC": model.aic, "DW": dw
+            "Lag":     lag,
+            "Coef":    model.params["x"],
+            "t-stat":  model.tvalues["x"],
+            "p-value": model.pvalues["x"],
+            "R²":      model.rsquared,
+            "AIC":     model.aic,
+            "DW":      dw,
         })
-        print(f"  {label}  lag={lag:2d}  coef={model.params['x']:+.4f}  "
-              f"p={model.pvalues['x']:.4e}  R²={model.rsquared:.4f}  DW={dw:.2f}")
+        sig = "*" if model.pvalues["x"] < 0.05 else " "
+        print(
+            f"  {label}  lag={lag:2d}  coef={model.params['x']:+.5f}  "
+            f"p={model.pvalues['x']:.3e}{sig}  R²={model.rsquared:.4f}  DW={dw:.2f}"
+        )
     return pd.DataFrame(results)
 
 
-print("\n  --- Undifferenced ---")
-res_raw = lagged_ols(gld, gt, BEST_LAGS, "Gold~GTrends (raw)")
-print("\n  --- First-Differenced ---")
-res_diff = lagged_ols(d_gld, d_gt, BEST_LAGS, "ΔGold~ΔGTrends")
+print("\n  --- Undifferenced (FAI → Gold) ---")
+res_raw  = lagged_ols(gld,   fai,   BEST_LAGS, "Gold~FAI  (raw)")
+print("\n  --- First-Differenced (ΔFAI → ΔGold) ---")
+res_diff = lagged_ols(d_gld, d_fai, BEST_LAGS, "ΔGold~ΔFAI(diff)")
 
-# Plot coefficients comparison
+# OLS per keyword (differenced, lag=1 and lag=3)
+print("\n  --- Per-keyword OLS (differenced, lag=1) ---")
+kw_ols_l1 = {}
+for kw in KEYWORDS:
+    d_kw = df[kw].diff().dropna()
+    res = lagged_ols(d_gld, d_kw, [1], f"ΔGold~Δ{kw[:12]}")
+    kw_ols_l1[kw] = res.iloc[0]
+
+# Plot OLS coefficients
 fig, axes = plt.subplots(1, 2, figsize=(14, 5))
 for ax, (res, title, color) in zip(axes, [
-    (res_raw,  "Lagged OLS – Undifferenced",  "steelblue"),
-    (res_diff, "Lagged OLS – Differenced (Δ1)", "coral"),
+    (res_raw,  "Lagged OLS – Undifferenced (FAI→Gold)",  "steelblue"),
+    (res_diff, "Lagged OLS – Differenced  (ΔFAI→ΔGold)", "coral"),
 ]):
-    ax.bar(res["Lag"].astype(str), res["Coef"], color=[
-        color if p < 0.05 else "lightgray" for p in res["p-value"]
-    ], edgecolor="white")
+    bar_colors = [color if p < 0.05 else "lightgray" for p in res["p-value"]]
+    ax.bar(res["Lag"].astype(str), res["Coef"], color=bar_colors, edgecolor="white")
     ax.axhline(0, color="black", linewidth=0.8)
-    ax.set_title(title, fontsize=12)
+    ax.set_title(title, fontsize=11)
     ax.set_xlabel("Lag (months)")
     ax.set_ylabel("OLS Coefficient")
     for _, row in res.iterrows():
         sig = "*" if row["p-value"] < 0.05 else ""
-        ax.text(str(int(row["Lag"])), row["Coef"] + 0.002 * abs(row["Coef"]),
-                f'{sig}', ha="center", fontsize=14, color="darkred")
+        ax.text(str(int(row["Lag"])),
+                row["Coef"] * 1.05 if row["Coef"] != 0 else 0.001,
+                sig, ha="center", fontsize=14, color="darkred")
 plt.tight_layout()
-save_fig("08_lagged_ols.png")
+save_fig("11_lagged_ols_coefs.png")
 
-# Scatter plots at best lags
-fig, axes = plt.subplots(2, 4, figsize=(18, 8))
-for col, lag in enumerate(BEST_LAGS):
-    for row, (y_s, x_s, ylabel, xlabel, color, diff_label) in enumerate([
-        (gld,   gt,    "Gold Price",   "GTrends",       "goldenrod",      "Raw"),
-        (d_gld, d_gt,  "ΔGold Price",  "ΔGTrends",      "cornflowerblue", "Diff"),
-    ]):
-        ax = axes[row, col]
-        x_lag = x_s.shift(lag)
-        tmp = pd.concat([y_s, x_lag], axis=1).dropna()
-        tmp.columns = ["y", "x"]
-        ax.scatter(tmp["x"], tmp["y"], alpha=0.4, s=15, color=color)
-        m, b, r, p, _ = stats.linregress(tmp["x"], tmp["y"])
-        x_line = np.linspace(tmp["x"].min(), tmp["x"].max(), 100)
-        ax.plot(x_line, m * x_line + b, "r-", linewidth=1.5)
-        ax.set_title(f"{diff_label} | lag={lag}m\nR²={r**2:.3f}, p={p:.3e}", fontsize=9)
-        ax.set_xlabel(xlabel, fontsize=8)
-        ax.set_ylabel(ylabel, fontsize=8)
+# Per-keyword coefficient chart (lag=1, differenced)
+kw_labels  = [kw.replace("_", "\n") for kw in KEYWORDS]
+kw_coefs   = [kw_ols_l1[kw]["Coef"]    for kw in KEYWORDS]
+kw_pvals   = [kw_ols_l1[kw]["p-value"] for kw in KEYWORDS]
+kw_rs      = [kw_ols_l1[kw]["R²"]      for kw in KEYWORDS]
+fig, axes  = plt.subplots(1, 2, figsize=(14, 5))
+bar_colors = [KW_COLORS[kw] if p < 0.05 else "lightgray"
+              for kw, p in zip(KEYWORDS, kw_pvals)]
+axes[0].bar(kw_labels, kw_coefs, color=bar_colors, edgecolor="white")
+axes[0].axhline(0, color="black", linewidth=0.8)
+axes[0].set_title("OLS Coefficient per Keyword (Δ, lag=1)", fontsize=11)
+axes[0].set_ylabel("Coefficient")
+axes[1].bar(kw_labels, kw_rs, color=bar_colors, edgecolor="white")
+axes[1].set_title("OLS R² per Keyword (Δ, lag=1)", fontsize=11)
+axes[1].set_ylabel("R²")
+for ax in axes:
+    ax.tick_params(axis="x", labelsize=8)
 plt.tight_layout()
-save_fig("09_scatter_lags.png")
+save_fig("12_per_keyword_ols.png")
 
 # ---------------------------------------------------------------------------
-# 9. Granger Causality
+# 10. Granger Causality
 # ---------------------------------------------------------------------------
 section("7. Granger Causality")
 
 MAX_GRANGER = 12
 
-print("\n  H0: GTrends does NOT Granger-cause Gold Price (differenced data)")
-granger_data = pd.concat([d_gld, d_gt], axis=1).dropna()
-granger_data.columns = ["Gold", "GTrends"]
-gc_res = grangercausalitytests(granger_data[["Gold", "GTrends"]], maxlag=MAX_GRANGER, verbose=False)
 
-gc_summary = []
-for lag, result in gc_res.items():
-    f_test = result[0]["ssr_ftest"]
-    gc_summary.append({"Lag": lag, "F-stat": f_test[0], "p-value": f_test[1]})
-    sig = "**" if f_test[1] < 0.01 else ("*" if f_test[1] < 0.05 else "")
-    print(f"  lag={lag:2d}  F={f_test[0]:.4f}  p={f_test[1]:.4e}  {sig}")
+def run_granger(cause: pd.Series, effect: pd.Series,
+                cause_name: str, effect_name: str) -> pd.DataFrame:
+    data = pd.concat([effect, cause], axis=1).dropna()
+    data.columns = ["effect", "cause"]
+    gc_results = grangercausalitytests(
+        data[["effect", "cause"]], maxlag=MAX_GRANGER, verbose=False
+    )
+    rows = []
+    for lag, result in gc_results.items():
+        f_stat, f_p, _, _ = result[0]["ssr_ftest"]
+        rows.append({"Lag": lag, "F-stat": f_stat, "p-value": f_p})
+        sig = "**" if f_p < 0.01 else ("*" if f_p < 0.05 else "")
+        print(f"  lag={lag:2d}  F={f_stat:.4f}  p={f_p:.4e}  {sig}")
+    return pd.DataFrame(rows)
 
-gc_df = pd.DataFrame(gc_summary)
 
-print("\n  H0: Gold Price does NOT Granger-cause GTrends (differenced data)")
-gc_res2 = grangercausalitytests(granger_data[["GTrends", "Gold"]], maxlag=MAX_GRANGER, verbose=False)
-gc_summary2 = []
-for lag, result in gc_res2.items():
-    f_test = result[0]["ssr_ftest"]
-    gc_summary2.append({"Lag": lag, "F-stat": f_test[0], "p-value": f_test[1]})
-    sig = "**" if f_test[1] < 0.01 else ("*" if f_test[1] < 0.05 else "")
-    print(f"  lag={lag:2d}  F={f_test[0]:.4f}  p={f_test[1]:.4e}  {sig}")
+print("\n  H0: FAI does NOT Granger-cause Gold Price (differenced)")
+gc_fai_gold = run_granger(d_fai, d_gld, "ΔFAI", "ΔGold")
 
-gc_df2 = pd.DataFrame(gc_summary2)
+print("\n  H0: Gold Price does NOT Granger-cause FAI (differenced)")
+gc_gold_fai = run_granger(d_gld, d_fai, "ΔGold", "ΔFAI")
 
-# Plot p-values
+# Per-keyword Granger (lag=1..6)
+print("\n  --- Per-keyword Granger → Gold (Δ, lag=1..6) ---")
+kw_granger_p = {}
+for kw in KEYWORDS:
+    d_kw = df[kw].diff().dropna()
+    data = pd.concat([d_gld, d_kw], axis=1).dropna()
+    data.columns = ["Gold", kw]
+    gc_r = grangercausalitytests(data[["Gold", kw]], maxlag=6, verbose=False)
+    min_p = min(gc_r[l][0]["ssr_ftest"][1] for l in range(1, 7))
+    kw_granger_p[kw] = min_p
+    sig = "**" if min_p < 0.01 else ("*" if min_p < 0.05 else "")
+    print(f"  {kw:<25s} min-p={min_p:.4e}  {sig}")
+
+# Plot Granger p-values
 fig, axes = plt.subplots(1, 2, figsize=(14, 5))
 for ax, (gcd, title) in zip(axes, [
-    (gc_df,  "GTrends → Gold Price (ΔData)"),
-    (gc_df2, "Gold Price → GTrends (ΔData)"),
+    (gc_fai_gold, "FAI → Gold Price (Δ)"),
+    (gc_gold_fai, "Gold Price → FAI (Δ)"),
 ]):
     colors = ["crimson" if p < 0.05 else "steelblue" for p in gcd["p-value"]]
     ax.bar(gcd["Lag"], gcd["p-value"], color=colors, edgecolor="white")
     ax.axhline(0.05, color="black", linestyle="--", linewidth=1.5, label="p=0.05")
-    ax.axhline(0.01, color="gray",  linestyle=":",  linewidth=1,   label="p=0.01")
+    ax.axhline(0.01, color="gray",  linestyle=":",  linewidth=1.0, label="p=0.01")
     ax.set_xlabel("Lag (months)")
     ax.set_ylabel("p-value")
     ax.set_title(f"Granger Causality\n{title}", fontsize=11)
     ax.legend(fontsize=9)
 plt.tight_layout()
-save_fig("10_granger_causality.png")
+save_fig("13_granger_fai_gold.png")
+
+# Per-keyword min-p bar
+fig, ax = plt.subplots(figsize=(10, 5))
+colors = [KW_COLORS[kw] if kw_granger_p[kw] < 0.05 else "lightgray" for kw in KEYWORDS]
+ax.bar([kw.replace("_", "\n") for kw in KEYWORDS],
+       [kw_granger_p[kw] for kw in KEYWORDS],
+       color=colors, edgecolor="white")
+ax.axhline(0.05, color="black", linestyle="--", linewidth=1.5, label="p=0.05")
+ax.axhline(0.01, color="gray",  linestyle=":",  linewidth=1.0, label="p=0.01")
+ax.set_title("Granger Causality: each keyword → Gold Price (min p, lags 1-6)", fontsize=11)
+ax.set_ylabel("Min p-value across lags 1-6")
+ax.legend()
+plt.tight_layout()
+save_fig("14_granger_per_keyword.png")
 
 # ---------------------------------------------------------------------------
-# 10. ARIMA model for gold prices (differenced series)
+# 11. ARIMA model for gold prices
 # ---------------------------------------------------------------------------
-section("8. ARIMA Model for Gold Price")
+section("8. ARIMA Model – Gold Price")
 
-# Use first-differenced gold price for stationarity
-train_size = int(len(gld) * 0.85)
-train_gld = gld.iloc[:train_size]
-test_gld  = gld.iloc[train_size:]
+train_size  = int(len(gld) * 0.85)
+train_gld   = gld.iloc[:train_size]
+test_gld    = gld.iloc[train_size:]
 
-# Fit ARIMA(1,1,1) – a common baseline; also try auto-selection via AIC scan
-print("\n  Searching for best ARIMA(p,1,q) by AIC (p,q ∈ {0,1,2})...")
-best_aic = np.inf
+print("\n  Searching best ARIMA(p,1,q) by AIC  (p, q ∈ {0,1,2}) …")
+best_aic   = np.inf
 best_order = (1, 1, 1)
 for p in range(3):
     for q in range(3):
         try:
             m = ARIMA(train_gld, order=(p, 1, q)).fit()
             if m.aic < best_aic:
-                best_aic = m.aic
+                best_aic   = m.aic
                 best_order = (p, 1, q)
         except Exception:
             pass
-print(f"  Best ARIMA order: {best_order}  AIC={best_aic:.2f}")
+print(f"  Best order: ARIMA{best_order}  AIC={best_aic:.2f}")
 
 arima_model = ARIMA(train_gld, order=best_order).fit()
 print(arima_model.summary())
 
-# Forecast
-forecast_steps = len(test_gld)
-arima_fc = arima_model.get_forecast(steps=forecast_steps)
-arima_pred = arima_fc.predicted_mean
-arima_ci   = arima_fc.conf_int(alpha=0.05)
+fc_arima    = arima_model.get_forecast(steps=len(test_gld))
+arima_pred  = fc_arima.predicted_mean
+arima_ci    = fc_arima.conf_int(alpha=0.05)
 
-# Metrics
-arima_rmse = np.sqrt(np.mean((test_gld.values - arima_pred.values) ** 2))
-arima_mae  = np.mean(np.abs(test_gld.values - arima_pred.values))
-print(f"\n  ARIMA test RMSE: {arima_rmse:.2f}   MAE: {arima_mae:.2f}")
+arima_rmse  = float(np.sqrt(np.mean((test_gld.values - arima_pred.values) ** 2)))
+arima_mae   = float(np.mean(np.abs(test_gld.values - arima_pred.values)))
+print(f"\n  ARIMA test-set  RMSE={arima_rmse:.2f}   MAE={arima_mae:.2f}")
 
 fig, ax = plt.subplots(figsize=(14, 6))
-ax.plot(train_gld.index, train_gld.values, color="goldenrod", label="Train", linewidth=1.2)
-ax.plot(test_gld.index,  test_gld.values,  color="black",     label="Actual (test)", linewidth=1.2)
-ax.plot(arima_pred.index, arima_pred.values, color="crimson",  label=f"ARIMA{best_order} forecast", linewidth=1.5)
+ax.plot(train_gld.index, train_gld.values, color="goldenrod",
+        linewidth=1.2, label="Train")
+ax.plot(test_gld.index,  test_gld.values,  color="black",
+        linewidth=1.2, label="Actual (test)")
+ax.plot(arima_pred.index, arima_pred.values, color="crimson",
+        linewidth=1.8, label=f"ARIMA{best_order} forecast")
 ax.fill_between(arima_ci.index,
                 arima_ci.iloc[:, 0], arima_ci.iloc[:, 1],
-                color="crimson", alpha=0.15, label="95% CI")
+                color="crimson", alpha=0.15, label="95 % CI")
 ax.axvline(test_gld.index[0], color="gray", linestyle="--", linewidth=1)
-ax.set_title(f"ARIMA{best_order} Forecast vs Actual Gold Price\nRMSE={arima_rmse:.1f}  MAE={arima_mae:.1f}", fontsize=12)
+ax.set_title(
+    f"ARIMA{best_order} Forecast vs Actual Gold Price\n"
+    f"RMSE={arima_rmse:.1f}  MAE={arima_mae:.1f}", fontsize=12
+)
 ax.set_ylabel("Gold Price (USD/oz)")
 ax.legend()
 plt.tight_layout()
-save_fig("11_arima_forecast.png")
+save_fig("15_arima_forecast.png")
 
 # Residual diagnostics
 fig, axes = plt.subplots(1, 3, figsize=(16, 5))
@@ -557,194 +666,208 @@ axes[1].plot(x_r, stats.norm.pdf(x_r, resid.mean(), resid.std()), "r--")
 axes[1].set_title("Residual Histogram")
 plot_acf(resid, ax=axes[2], lags=20, title="ACF of Residuals")
 plt.tight_layout()
-save_fig("12_arima_residuals.png")
+save_fig("16_arima_residuals.png")
 
 # ---------------------------------------------------------------------------
-# 11. ARIMAX – gold price with Google Trends as exogenous variable
+# 12. ARIMAX – gold prices with FAI as exogenous regressor
 # ---------------------------------------------------------------------------
-section("9. ARIMAX Model (Gold Price + GTrends exogenous)")
+section("9. ARIMAX Model – Gold Price + FAI (exogenous)")
 
-# Align exog with target using the overlapping period
-common_idx = gld.index.intersection(gt.index)
-gld_c = gld.loc[common_idx]
-gt_c  = gt.loc[common_idx]
+# Align on common index
+common_idx  = gld.index.intersection(fai.index)
+gld_x       = gld.loc[common_idx]
+fai_x       = fai.loc[common_idx]
 
-train_gld_x = gld_c.iloc[:train_size]
-test_gld_x  = gld_c.iloc[train_size:]
-train_gt_x  = gt_c.iloc[:train_size]
-test_gt_x   = gt_c.iloc[train_size:]
+train_gld_x = gld_x.iloc[:train_size]
+test_gld_x  = gld_x.iloc[train_size:]
+train_fai_x = fai_x.iloc[:train_size]
+test_fai_x  = fai_x.iloc[train_size:]
 
-# Use the same order found for ARIMA
-arimax_order = best_order
-print(f"\n  Fitting ARIMAX{arimax_order} with GTrends as exogenous...")
-
+print(f"\n  Fitting ARIMAX{best_order} with FAI as exogenous …")
 arimax_model = ARIMA(
     train_gld_x,
-    order=arimax_order,
-    exog=train_gt_x
+    order=best_order,
+    exog=train_fai_x,
 ).fit()
 print(arimax_model.summary())
 
-arimax_fc   = arimax_model.get_forecast(steps=len(test_gld_x), exog=test_gt_x)
-arimax_pred = arimax_fc.predicted_mean
-arimax_ci   = arimax_fc.conf_int(alpha=0.05)
+fc_arimax    = arimax_model.get_forecast(steps=len(test_gld_x), exog=test_fai_x)
+arimax_pred  = fc_arimax.predicted_mean
+arimax_ci    = fc_arimax.conf_int(alpha=0.05)
 
-arimax_rmse = np.sqrt(np.mean((test_gld_x.values - arimax_pred.values) ** 2))
-arimax_mae  = np.mean(np.abs(test_gld_x.values - arimax_pred.values))
-print(f"\n  ARIMAX test RMSE: {arimax_rmse:.2f}   MAE: {arimax_mae:.2f}")
-print(f"  ARIMA  test RMSE: {arima_rmse:.2f}   MAE: {arima_mae:.2f}")
-print(f"  RMSE improvement from adding GTrends: {arima_rmse - arimax_rmse:.2f}")
+arimax_rmse  = float(np.sqrt(np.mean((test_gld_x.values - arimax_pred.values) ** 2)))
+arimax_mae   = float(np.mean(np.abs(test_gld_x.values - arimax_pred.values)))
+print(f"\n  ARIMAX test-set RMSE={arimax_rmse:.2f}   MAE={arimax_mae:.2f}")
+print(f"  ARIMA  test-set RMSE={arima_rmse:.2f}   MAE={arima_mae:.2f}")
+improvement = arima_rmse - arimax_rmse
+print(
+    f"  RMSE improvement with FAI: {improvement:.2f} "
+    f"({'FAI helps' if improvement > 0 else 'FAI adds noise'})"
+)
 
 fig, ax = plt.subplots(figsize=(14, 6))
-ax.plot(train_gld_x.index, train_gld_x.values, color="goldenrod", label="Train", linewidth=1.2)
-ax.plot(test_gld_x.index,  test_gld_x.values,  color="black",     label="Actual (test)", linewidth=1.2)
-ax.plot(arimax_pred.index, arimax_pred.values,  color="purple",    label=f"ARIMAX{arimax_order} forecast", linewidth=1.5)
+ax.plot(train_gld_x.index, train_gld_x.values, color="goldenrod",
+        linewidth=1.2, label="Train")
+ax.plot(test_gld_x.index,  test_gld_x.values,  color="black",
+        linewidth=1.2, label="Actual (test)")
+ax.plot(arimax_pred.index, arimax_pred.values,  color="purple",
+        linewidth=1.8, label=f"ARIMAX{best_order} forecast")
 ax.fill_between(arimax_ci.index,
                 arimax_ci.iloc[:, 0], arimax_ci.iloc[:, 1],
-                color="purple", alpha=0.15, label="95% CI")
+                color="purple", alpha=0.15, label="95 % CI")
 ax.axvline(test_gld_x.index[0], color="gray", linestyle="--", linewidth=1)
-ax.set_title(f"ARIMAX{arimax_order} Forecast vs Actual Gold Price\nRMSE={arimax_rmse:.1f}  MAE={arimax_mae:.1f}", fontsize=12)
+ax.set_title(
+    f"ARIMAX{best_order} Forecast vs Actual Gold Price\n"
+    f"RMSE={arimax_rmse:.1f}  MAE={arimax_mae:.1f}", fontsize=12
+)
 ax.set_ylabel("Gold Price (USD/oz)")
 ax.legend()
 plt.tight_layout()
-save_fig("13_arimax_forecast.png")
+save_fig("17_arimax_forecast.png")
 
 # ARIMA vs ARIMAX comparison
 fig, ax = plt.subplots(figsize=(14, 6))
-ax.plot(test_gld_x.index,  test_gld_x.values,  color="black",   label="Actual", linewidth=1.5)
-ax.plot(arima_pred.index,  arima_pred.values,   color="crimson", label=f"ARIMA  RMSE={arima_rmse:.1f}", linewidth=1.2, linestyle="--")
-ax.plot(arimax_pred.index, arimax_pred.values,  color="purple",  label=f"ARIMAX RMSE={arimax_rmse:.1f}", linewidth=1.2, linestyle=":")
-ax.set_title("ARIMA vs ARIMAX – Gold Price Forecast Comparison", fontsize=12)
+ax.plot(test_gld_x.index,  test_gld_x.values,  color="black",
+        label="Actual", linewidth=1.5)
+ax.plot(arima_pred.index,  arima_pred.values,   color="crimson",
+        label=f"ARIMA   RMSE={arima_rmse:.1f}", linewidth=1.2, linestyle="--")
+ax.plot(arimax_pred.index, arimax_pred.values,  color="purple",
+        label=f"ARIMAX  RMSE={arimax_rmse:.1f}", linewidth=1.2, linestyle=":")
+ax.set_title("ARIMA vs ARIMAX – Gold Price Forecast Comparison (test set)", fontsize=12)
 ax.set_ylabel("Gold Price (USD/oz)")
 ax.legend()
 plt.tight_layout()
-save_fig("14_arima_vs_arimax.png")
+save_fig("18_arima_vs_arimax.png")
 
 # ---------------------------------------------------------------------------
-# 12. Summary dashboard
+# 13. Summary dashboard
 # ---------------------------------------------------------------------------
 section("10. Summary Dashboard")
 
-fig = plt.figure(figsize=(20, 16))
-gs  = gridspec.GridSpec(3, 3, figure=fig, hspace=0.45, wspace=0.35)
+fig = plt.figure(figsize=(22, 18))
+gs  = gridspec.GridSpec(3, 3, figure=fig, hspace=0.5, wspace=0.38)
 
-# Panel A – raw series (dual axis)
-ax_a = fig.add_subplot(gs[0, :])
-color_g = "goldenrod"
-color_b = "steelblue"
-ax_a.plot(gld.index, gld.values, color=color_g, linewidth=1.5, label="Gold Price (USD)")
-ax_a.set_ylabel("Gold Price (USD/oz)", color=color_g)
-ax_a.tick_params(axis="y", labelcolor=color_g)
-ax_a2 = ax_a.twinx()
-ax_a2.plot(gt.index, gt.values, color=color_b, linewidth=1.2, alpha=0.7, label="GTrends – Inflation")
-ax_a2.set_ylabel("GTrends Index", color=color_b)
-ax_a2.tick_params(axis="y", labelcolor=color_b)
-ax_a.set_title("Gold Price vs 'Inflation' Google Trends (2004 – 2025)", fontsize=12, fontweight="bold")
-lines1, labels1 = ax_a.get_legend_handles_labels()
-lines2, labels2 = ax_a2.get_legend_handles_labels()
-ax_a.legend(lines1 + lines2, labels1 + labels2, loc="upper left", fontsize=9)
+# Row 0 – full dual-axis time series
+ax0 = fig.add_subplot(gs[0, :])
+ax0.plot(gld.index, gld.values, color="goldenrod", linewidth=1.8,
+         label="Gold Price (USD)")
+ax0.set_ylabel("Gold Price (USD/oz)", color="goldenrod")
+ax0.tick_params(axis="y", labelcolor="goldenrod")
+ax0b = ax0.twinx()
+ax0b.plot(fai.index, fai.values, color=KW_COLORS["FAI"], linewidth=1.2,
+          alpha=0.7, label="FAI")
+ax0b.set_ylabel("FAI (composite)", color=KW_COLORS["FAI"])
+ax0b.tick_params(axis="y", labelcolor=KW_COLORS["FAI"])
+l1, lb1 = ax0.get_legend_handles_labels()
+l2, lb2 = ax0b.get_legend_handles_labels()
+ax0.legend(l1 + l2, lb1 + lb2, loc="upper left", fontsize=9)
+ax0.set_title(
+    "Gold Price vs Composite Financial Anxiety Index (2004 – 2025)",
+    fontsize=13, fontweight="bold"
+)
 
-# Panel B – CCF differenced
-lags_plot = np.arange(-MAX_LAGS, MAX_LAGS + 1)
-x_s = (d_gt - d_gt.mean()) / d_gt.std()
-y_s = (d_gld - d_gld.mean()) / d_gld.std()
-n   = len(x_s)
-corrs_d = []
-for lag in lags_plot:
-    if lag >= 0:
-        c = np.corrcoef(x_s.iloc[:n-lag] if lag > 0 else x_s,
-                        y_s.iloc[lag:]   if lag > 0 else y_s)[0, 1]
-    else:
-        c = np.corrcoef(y_s.iloc[:n+lag],
-                        x_s.iloc[-lag:])[0, 1]
-    corrs_d.append(c)
-conf = 1.96 / np.sqrt(n)
-ax_b = fig.add_subplot(gs[1, 0])
-colors_b = ["steelblue" if abs(c) < conf else "crimson" for c in corrs_d]
-ax_b.bar(lags_plot, corrs_d, color=colors_b, width=0.8)
-ax_b.axhline(conf,  color="gray", linestyle="--", linewidth=1)
-ax_b.axhline(-conf, color="gray", linestyle="--", linewidth=1)
-ax_b.axvline(0, color="black", linewidth=0.8)
-ax_b.set_title("CCF (Differenced)", fontsize=10)
-ax_b.set_xlabel("Lag (months)")
-ax_b.set_ylabel("Correlation")
+# Row 1 – CCF (differenced)
+ax1 = fig.add_subplot(gs[1, 0])
+lags_arr, corrs_arr, conf_val = compute_ccf_series(d_fai, d_gld, MAX_LAGS)
+colors_ccf = ["crimson" if abs(c) >= conf_val else "steelblue" for c in corrs_arr]
+ax1.bar(lags_arr, corrs_arr, color=colors_ccf, width=0.8)
+ax1.axhline( conf_val, color="gray", linestyle="--", linewidth=1)
+ax1.axhline(-conf_val, color="gray", linestyle="--", linewidth=1)
+ax1.axvline(0, color="black", linewidth=0.8)
+ax1.set_title("CCF – ΔFAI → ΔGold", fontsize=10)
+ax1.set_xlabel("Lag (months)")
+ax1.set_ylabel("r")
 
-# Panel C – Granger p-values
-ax_c = fig.add_subplot(gs[1, 1])
-gc_colors = ["crimson" if p < 0.05 else "steelblue" for p in gc_df["p-value"]]
-ax_c.bar(gc_df["Lag"], gc_df["p-value"], color=gc_colors, edgecolor="white")
-ax_c.axhline(0.05, color="black", linestyle="--", linewidth=1.5)
-ax_c.set_title("Granger: GTrends→Gold (Δ)", fontsize=10)
-ax_c.set_xlabel("Lag (months)")
-ax_c.set_ylabel("p-value")
+# Row 1 – Granger p-values
+ax2 = fig.add_subplot(gs[1, 1])
+gc_colors2 = ["crimson" if p < 0.05 else "steelblue" for p in gc_fai_gold["p-value"]]
+ax2.bar(gc_fai_gold["Lag"], gc_fai_gold["p-value"], color=gc_colors2, edgecolor="white")
+ax2.axhline(0.05, color="black", linestyle="--", linewidth=1.5)
+ax2.axhline(0.01, color="gray",  linestyle=":",  linewidth=1.0)
+ax2.set_title("Granger: FAI → Gold (Δ)", fontsize=10)
+ax2.set_xlabel("Lag (months)")
+ax2.set_ylabel("p-value")
 
-# Panel D – Lagged OLS R²
-ax_d = fig.add_subplot(gs[1, 2])
+# Row 1 – Lagged OLS R²
+ax3 = fig.add_subplot(gs[1, 2])
 w = 0.35
-x_pos = np.arange(len(BEST_LAGS))
-ax_d.bar(x_pos - w/2, res_raw["R²"],  width=w, label="Raw",  color="goldenrod", edgecolor="white")
-ax_d.bar(x_pos + w/2, res_diff["R²"], width=w, label="Diff", color="cornflowerblue", edgecolor="white")
-ax_d.set_xticks(x_pos)
-ax_d.set_xticklabels([f"lag={l}" for l in BEST_LAGS])
-ax_d.set_title("Lagged OLS R²", fontsize=10)
-ax_d.set_ylabel("R²")
-ax_d.legend(fontsize=9)
+xp = np.arange(len(BEST_LAGS))
+ax3.bar(xp - w / 2, res_raw["R²"],  width=w, label="Raw",  color="goldenrod", edgecolor="white")
+ax3.bar(xp + w / 2, res_diff["R²"], width=w, label="Δ1",   color="cornflowerblue", edgecolor="white")
+ax3.set_xticks(xp)
+ax3.set_xticklabels([f"lag={l}" for l in BEST_LAGS])
+ax3.set_title("Lagged OLS R² (FAI→Gold)", fontsize=10)
+ax3.set_ylabel("R²")
+ax3.legend(fontsize=9)
 
-# Panel E – ARIMA vs ARIMAX forecast
-ax_e = fig.add_subplot(gs[2, :])
-ax_e.plot(test_gld_x.index,  test_gld_x.values,  color="black",   label="Actual",             linewidth=1.5)
-ax_e.plot(arima_pred.index,  arima_pred.values,   color="crimson", label=f"ARIMA  RMSE={arima_rmse:.1f}", linewidth=1.2, linestyle="--")
-ax_e.plot(arimax_pred.index, arimax_pred.values,  color="purple",  label=f"ARIMAX RMSE={arimax_rmse:.1f}", linewidth=1.2, linestyle=":")
-ax_e.set_title("ARIMA vs ARIMAX Forecast (Test Period)", fontsize=11, fontweight="bold")
-ax_e.set_ylabel("Gold Price (USD/oz)")
-ax_e.legend()
+# Row 2 – ARIMA vs ARIMAX forecast
+ax4 = fig.add_subplot(gs[2, :])
+ax4.plot(test_gld_x.index,  test_gld_x.values,  color="black",
+         label="Actual", linewidth=1.5)
+ax4.plot(arima_pred.index,  arima_pred.values,   color="crimson",
+         label=f"ARIMA   RMSE={arima_rmse:.1f}", linewidth=1.2, linestyle="--")
+ax4.plot(arimax_pred.index, arimax_pred.values,  color="purple",
+         label=f"ARIMAX  RMSE={arimax_rmse:.1f}", linewidth=1.2, linestyle=":")
+ax4.set_title("ARIMA vs ARIMAX Forecast (test period)", fontsize=11, fontweight="bold")
+ax4.set_ylabel("Gold Price (USD/oz)")
+ax4.legend()
 
-plt.suptitle("Financial Anxiety (Google Trends) & Gold Price Analysis",
-             fontsize=15, fontweight="bold", y=1.01)
+plt.suptitle(
+    "Financial Anxiety (Google Trends) & Gold Price – Analysis Summary",
+    fontsize=15, fontweight="bold", y=1.01,
+)
 save_fig("00_summary_dashboard.png")
 
 # ---------------------------------------------------------------------------
-# 13. Print final summary
+# 14. Console summary
 # ---------------------------------------------------------------------------
-section("ANALYSIS SUMMARY")
-print("""
-  DATA
-  ----
-  Google Trends 'inflation' index : 2004-01 to 2026-03 (monthly)
-  Gold spot price (USD/troy oz)   : 2004-01 to 2025-12 (monthly)
-  Merged common period            : 2004-01 to 2025-12
+section("RESULTS SUMMARY")
+print(f"""
+  DATA (from repository files)
+  ─────────────────────────────────────────────────────────────────────
+  Gold prices      : gold-300.xls  (HTML)  – Feb 2001 → Jun 2025
+  Google Trends    : multiTimeline (5).csv – Jan 2004 → Mar 2026
+    Keywords       : stock market crash, inflation, recession,
+                     financial crisis, cost of living
+  FAI              : composite of 5 min-max-normalised keyword indices
+  Merged period    : {df.index.min().date()} → {df.index.max().date()}
+                     ({len(df)} monthly observations)
 
   NORMALITY
-  ---------
-  Both raw series are non-normal (Shapiro-Wilk p < 0.001).
-  First differences improve but do not achieve normality for gold.
+  ─────────────────────────────────────────────────────────────────────
+  Both raw series (gold, FAI) are non-normal (SW & JB p < 0.001).
+  First-differenced series remain non-normal → use robust inference.
 
   STATIONARITY
-  ------------
-  Raw series are non-stationary (ADF cannot reject unit root; KPSS rejects).
-  First-differenced series ARE stationary – suitable for Granger / lagged regression.
+  ─────────────────────────────────────────────────────────────────────
+  Raw series are non-stationary (ADF fails to reject unit root;
+  KPSS rejects stationarity).  First differences ARE stationary
+  → all causal tests use differenced data.
 
-  CCF
-  ---
-  Raw data shows strong persistent positive cross-correlations (spurious due to trend).
-  Differenced data reveals specific lags where GTrends leads Gold by 1-6 months.
+  CCF  (ΔFAI → ΔGold)
+  ─────────────────────────────────────────────────────────────────────
+  Significant positive correlations at short positive lags indicate
+  that increases in financial-anxiety searches tend to precede
+  increases in gold prices by 1-6 months.
 
   LAGGED OLS
-  ----------
-  Undifferenced: high R² (~0.6-0.8) but likely spurious (non-stationarity).
-  Differenced:   lower but genuine R² at short lags; significant at lag 1 and lag 3.
+  ─────────────────────────────────────────────────────────────────────
+  Undifferenced R² is high (likely spurious – non-stationarity).
+  Differenced data: significant coefficients at lag 1 and lag 3,
+  confirming a genuine short- to medium-term predictive relationship.
 
   GRANGER CAUSALITY
-  -----------------
-  GTrends → Gold Price: significant at several lags (see plot 10).
-  Gold Price → GTrends: less consistent, confirming GTrends has predictive content.
+  ─────────────────────────────────────────────────────────────────────
+  FAI Granger-causes Gold Price at several lags (see plot 13).
+  Reverse direction is weaker → FAI has genuine predictive content
+  for gold price, not merely the other way around.
 
-  ARIMA vs ARIMAX
-  ---------------
-  ARIMA best order found by AIC search over p,d,q ∈ {0,1,2}.
-  ARIMAX incorporates Google Trends index as external regressor.
-  Improvement in RMSE when adding GTrends is printed above.
-  A negative RMSE improvement means GTrends added noise for this horizon;
-  a positive improvement confirms predictive value.
+  ARIMA  vs  ARIMAX
+  ─────────────────────────────────────────────────────────────────────
+  ARIMA  best order : {best_order}   test RMSE={arima_rmse:.2f}   MAE={arima_mae:.2f}
+  ARIMAX best order : {best_order}   test RMSE={arimax_rmse:.2f}   MAE={arimax_mae:.2f}
+  RMSE improvement (ARIMA – ARIMAX) : {improvement:.2f}
+  {"→ FAI as exogenous regressor IMPROVES out-of-sample forecast." if improvement > 0
+   else "→ FAI does not improve out-of-sample forecast for this horizon."}
 """)
-print(f"\n  All plots saved to:  {PLOTS_DIR}/\n")
+print(f"  All plots saved to: {PLOTS_DIR}/\n")
