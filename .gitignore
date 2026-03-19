@@ -1,0 +1,11 @@
+# Python
+__pycache__/
+*.py[cod]
+.env
+
+# Temporary / editor files
+*.swp
+.DS_Store
+
+# Preview helper image (auto-generated, not part of the analysis outputs)
+plots/preview_grid.png
